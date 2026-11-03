@@ -126,6 +126,14 @@ final class ScrapeConfig
         }
         if (in_array($this->method, ['POST', 'PUT', 'PATCH'], true)) {
             $this->encodeBody();
+        } elseif ($this->data !== null || $this->body !== null) {
+            throw new ScrapeConfigException("A {$this->method} request carries no body: use POST, PUT or PATCH");
+        }
+        foreach ($cookies as $name => $value) {
+            // A separator would split one cookie into several.
+            if (preg_match('/[;,\s]/', $name . $value) === 1) {
+                throw new ScrapeConfigException("Cookie {$name}: a name or value cannot hold ';', ',' or whitespace");
+            }
         }
     }
 
@@ -157,7 +165,7 @@ final class ScrapeConfig
      *
      * @return array<string, string>
      */
-    public function toApiParams(string $key): array
+    public function toApiParams(#[\SensitiveParameter] string $key): array
     {
         $params = ['key' => $key, 'url' => $this->url];
         if ($this->country !== null) {

@@ -65,6 +65,8 @@ final class CrawlerTest extends ClientTestCase
             fn () => new CrawlerConfig(url: 'https://x.io', excludePaths: ['/a'], includeOnlyPaths: ['/b']),
             fn () => new CrawlerConfig(url: 'https://x.io', refreshInterval: 60),
             fn () => new CrawlerConfig(url: 'https://x.io', contentFormats: ['pdf']),
+            fn () => new CrawlerConfig(urlList: []),
+            fn () => new CrawlerConfig(url: 'https://x.io', urlList: []),
         ];
         foreach ($cases as $index => $case) {
             try {
@@ -80,7 +82,7 @@ final class CrawlerTest extends ClientTestCase
     {
         $client = $this->client([
             self::json(['crawler_uuid' => 'c1', 'status' => 'DONE', 'is_success' => true, 'is_finished' => true, 'state' => ['urls_visited' => 5], 'search' => ['status' => 'READY']]),
-            new Response(200, ['content-type' => 'text/plain'], "https://x.io/a,timeout\nhttps://x.io/b\n"),
+            new Response(200, ['content-type' => 'text/plain'], "https://x.io/?ids=1,2,timeout\nhttps://x.io/b\n"),
             self::json(['contents' => ['https://x.io/a' => ['markdown' => '# A']], 'links' => ['next' => null]]),
             new Response(200, ['content-type' => 'application/gzip'], 'WARC'),
         ]);
@@ -91,6 +93,7 @@ final class CrawlerTest extends ClientTestCase
         self::assertSame(5, $status->state()['urls_visited']);
 
         $urls = $client->crawlUrls('c1', 'failed');
+        self::assertSame('https://x.io/?ids=1,2', $urls->urls[0]->url);
         self::assertSame('timeout', $urls->urls[0]->reason);
         self::assertNull($urls->urls[1]->reason);
         self::assertSame('failed', $this->query(1)['status']);
@@ -258,6 +261,28 @@ final class CrawlerTest extends ClientTestCase
 
         $this->expectException(CrawlerException::class);
         (new Crawl($client, new CrawlerConfig(url: 'https://x.io')))->status();
+    }
+
+    public function testWaitOnACancelledCrawl(): void
+    {
+        $cancelled = self::json(['crawler_uuid' => 'c1', 'status' => 'CANCELLED', 'is_finished' => true]);
+
+        self::assertSame('c1', Crawl::fromUuid($this->client([$cancelled]), 'c1')->wait(pollInterval: 0.0, allowCancelled: true)->uuid());
+
+        $this->expectExceptionMessage('cancelled');
+        Crawl::fromUuid($this->client([$cancelled]), 'c1')->wait(pollInterval: 0.0);
+    }
+
+    public function testStartWithoutAUuidIsAnError(): void
+    {
+        $this->expectException(CrawlerException::class);
+        $this->client([self::json(['status' => 'PENDING'])])->startCrawl(new CrawlerConfig(url: 'https://x.io'));
+    }
+
+    public function testAMalformedFrameIsACrawlerError(): void
+    {
+        $this->expectException(CrawlerException::class);
+        iterator_to_array($this->client([new Response(200, [], "event: done\ndata: {not json\n\n")])->crawlPrompt(['c1'], 'q'));
     }
 
     public function testWaitThrowsOnAFailedCrawl(): void

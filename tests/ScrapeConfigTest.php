@@ -134,6 +134,10 @@ final class ScrapeConfigTest extends TestCase
             fn () => new ScrapeConfig(url: 'https://x.io', screenshotFlags: ['sepia']),
             fn () => new ScrapeConfig(url: 'https://x.io', method: 'POST', data: ['a' => 1], headers: ['content-type' => 'text/xml']),
             fn () => (new ScrapeConfig(url: 'https://x.io', extractionTemplate: 't', extractionEphemeralTemplate: ['a' => 1]))->toApiParams('k'),
+            fn () => new ScrapeConfig(url: 'https://x.io', data: ['a' => 1]),
+            fn () => new ScrapeConfig(url: 'https://x.io', method: 'OPTIONS', body: 'x'),
+            fn () => new ScrapeConfig(url: 'https://x.io', cookies: ['a' => 'x; admin=1']),
+            fn () => new ScrapeConfig(url: 'https://x.io', cookies: ['a b' => 'x']),
         ];
         foreach ($cases as $index => $case) {
             try {

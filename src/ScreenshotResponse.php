@@ -12,6 +12,8 @@ final class ScreenshotResponse
         public readonly string $contentType,
         public readonly ?int $upstreamStatusCode,
         public readonly ?string $upstreamUrl,
+        /** The job a webhook delivers the screenshot to; the image is then empty. */
+        public readonly ?string $jobUuid = null,
     ) {
     }
 
@@ -27,7 +29,9 @@ final class ScreenshotResponse
         if (pathinfo($path, PATHINFO_EXTENSION) === '') {
             $path .= '.' . $this->extension();
         }
-        file_put_contents($path, $this->image);
+        if (file_put_contents($path, $this->image) === false) {
+            throw new \RuntimeException("Cannot write {$path}");
+        }
 
         return $path;
     }

@@ -27,8 +27,9 @@ final class CrawlerUrls
             if (in_array($status, ['visited', 'pending'], true) || !str_contains($line, ',')) {
                 $urls[] = new CrawlerUrl($line, $status);
             } else {
-                [$url, $reason] = explode(',', $line, 2);
-                $urls[] = new CrawlerUrl($url, $status, $reason);
+                // A URL may hold a comma, a reason never does.
+                $comma = (int) strrpos($line, ',');
+                $urls[] = new CrawlerUrl(substr($line, 0, $comma), $status, substr($line, $comma + 1));
             }
         }
 

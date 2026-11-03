@@ -92,7 +92,7 @@ final class ScrapflyClientTest extends ClientTestCase
         ]);
 
         try {
-            $this->client([self::json($blocked, 422, ['x-retry' => '30'])])->scrape(new ScrapeConfig(url: 'https://x.io'));
+            $this->client([self::json($blocked, 422, ['retry-after' => '30'])])->scrape(new ScrapeConfig(url: 'https://x.io'));
             self::fail('no exception');
         } catch (UnblockerException $exception) {
             self::assertTrue($exception->isRetryable());
@@ -247,6 +247,168 @@ final class ScrapflyClientTest extends ClientTestCase
         }
     }
 
+    public function testTheKeyIsNotInTheTraceOrADump(): void
+    {
+        $key = 'scp-live-0123456789abcdef';
+        $client = new ScrapflyClient($key, 'http://127.0.0.1:1');
+
+        try {
+            $client->scrape(new ScrapeConfig(url: 'https://x.io'));
+            self::fail('no exception');
+        } catch (TransportException $exception) {
+            self::assertStringNotContainsString('0123456789abcdef', print_r(array_column($exception->getTrace(), 'args'), true));
+        }
+        try {
+            (new ScrapeConfig(url: 'https://x.io', extractionTemplate: 't', extractionEphemeralTemplate: ['a' => 1]))->toApiParams($key);
+            self::fail('no exception');
+        } catch (\Scrapfly\Exception\ScrapeConfigException $exception) {
+            self::assertStringNotContainsString('0123456789abcdef', print_r(array_column($exception->getTrace(), 'args'), true));
+        }
+
+        self::assertStringNotContainsString('0123456789abcdef', print_r($client, true));
+    }
+
+    public function testARedirectIsReturnedNotFollowed(): void
+    {
+        $client = $this->client([new Response(302, ['location' => 'http://169.254.169.254/latest/meta-data/']), new Response(200, [], 'metadata')]);
+
+        $response = $client->scrapeProxified(new ScrapeConfig(url: 'https://x.io'));
+
+        self::assertSame(302, $response->getStatusCode());
+        self::assertCount(1, $this->sent);
+    }
+
+    public function testAProxifiedRejectionBeforeTheScrapeThrows(): void
+    {
+        $rejected = ['config' => [], 'context' => [], 'result' => ['status' => 'DONE', 'success' => null, 'error' => [
+            'code' => 'ERR::SCRAPE::TOO_MANY_CONCURRENT_REQUEST', 'http_code' => 429, 'retryable' => true, 'message' => 'Account concurrency limit reached',
+        ]]];
+
+        $this->expectException(TooManyRequestsException::class);
+        $this->client([self::json($rejected, 429)])->scrapeProxified(new ScrapeConfig(url: 'https://x.io'));
+    }
+
+    public function testAWebhookJobIsReturnedNotThrown(): void
+    {
+        $queued = self::scrapeEnvelope('', ['status' => 'QUEUED', 'success' => null, 'error' => null]);
+        $scrape = $this->client([self::json($queued)])->scrape(new ScrapeConfig(url: 'https://x.io', webhook: 'my-hook'));
+        self::assertSame('QUEUED', $scrape->result()['status']);
+
+        $screenshot = $this->client([self::json(['success' => true, 'webhook_enqueued' => true, 'job_uuid' => 'j1'], 201)])
+            ->screenshot(new ScreenshotConfig(url: 'https://x.io', webhook: 'my-hook'));
+        self::assertSame('j1', $screenshot->jobUuid);
+        self::assertSame('', $screenshot->image);
+
+        $extraction = $this->client([self::json(['success' => true, 'job_uuid' => 'j2'], 201)])
+            ->extract(new ExtractionConfig(body: 'x', contentType: 'text/html', webhook: 'my-hook'));
+        self::assertSame('j2', $extraction->jobUuid);
+    }
+
+    public function testAProxifiedRefusalWithANumericRejectCode(): void
+    {
+        $this->expectException(TooManyRequestsException::class);
+        $this->client([new Response(429, ['x-scrapfly-reject-code' => '429', 'x-scrapfly-reject-description' => 'throttled', 'retry-after' => '10'])])
+            ->scrapeProxified(new ScrapeConfig(url: 'https://x.io'));
+    }
+
+    public function testAProxifiedBlockAfterTheTargetAnsweredThrows(): void
+    {
+        $blocked = self::scrapeEnvelope('', ['success' => false, 'status_code' => 403, 'error' => ['code' => 'ERR::ASP::SHIELD_PROTECTION_FAILED', 'message' => 'blocked']]);
+
+        $this->expectException(UnblockerException::class);
+        $this->client([self::json($blocked, 422, ['x-scrapfly-log' => '01J0'])])->scrapeProxified(new ScrapeConfig(url: 'https://x.io'));
+    }
+
+    public function testAProxifiedTargetErrorIsKeptWhenAsked(): void
+    {
+        $response = $this->client([new Response(404, ['x-scrapfly-reject-code' => 'ERR::SCRAPE::BAD_UPSTREAM_RESPONSE', 'x-scrapfly-reject-http-code' => '404'], 'gone')])
+            ->scrapeProxified(new ScrapeConfig(url: 'https://x.io', raiseOnUpstreamError: false));
+        self::assertSame(404, $response->getStatusCode());
+        self::assertSame('gone', (string) $response->getBody());
+    }
+
+    public function testAProxifiedTargetErrorIsAnUpstreamException(): void
+    {
+        $client = $this->client([new Response(503, [
+            'x-scrapfly-reject-code' => 'ERR::SCRAPE::BAD_UPSTREAM_RESPONSE',
+            'x-scrapfly-reject-description' => 'The target answered 503',
+            'x-scrapfly-reject-http-code' => '503',
+            'x-scrapfly-reject-retryable' => 'false',
+        ], 'down')]);
+
+        try {
+            $client->scrapeProxified(new ScrapeConfig(url: 'https://x.io'));
+            self::fail('no exception');
+        } catch (UpstreamHttpServerException $exception) {
+            self::assertSame('ERR::SCRAPE::BAD_UPSTREAM_RESPONSE', $exception->getErrorCode());
+            self::assertSame(503, $exception->getHttpStatusCode());
+            self::assertFalse($exception->isRetryable());
+        }
+    }
+
+    public function testAHeadFailureIsReadFromTheRejectHeaders(): void
+    {
+        $rejected = ['x-scrapfly-reject-code' => 'ERR::SCRAPE::BAD_UPSTREAM_RESPONSE', 'x-scrapfly-reject-http-code' => '404', 'x-scrapfly-log' => '01J0'];
+
+        try {
+            $this->client([new Response(404, $rejected)])->scrape(new ScrapeConfig(url: 'https://x.io', method: 'HEAD'));
+            self::fail('no exception');
+        } catch (UpstreamHttpClientException $exception) {
+            self::assertSame(404, $exception->getHttpStatusCode());
+        }
+
+        $response = $this->client([new Response(404, $rejected + ['content-type' => 'text/html'])])
+            ->scrape(new ScrapeConfig(url: 'https://x.io', method: 'HEAD', raiseOnUpstreamError: false));
+        self::assertFalse($response->isSuccess());
+        self::assertSame(['content-type' => 'text/html'], $response->responseHeaders());
+
+        $this->expectException(BadApiKeyException::class);
+        $this->client([new Response(401, ['x-scrapfly-reject-code' => 'ERR::AUTH::INVALID_KEY'])])
+            ->scrape(new ScrapeConfig(url: 'https://x.io', method: 'HEAD'));
+    }
+
+    public function testATargetStatusIsNotTakenForTheAccounts(): void
+    {
+        $blocked = self::scrapeEnvelope('', ['success' => false, 'status_code' => 429, 'error' => ['code' => 'ERR::ASP::SHIELD_PROTECTION_FAILED', 'message' => 'blocked']]);
+
+        $this->expectException(UnblockerException::class);
+        $this->client([self::json($blocked, 422)])->scrape(new ScrapeConfig(url: 'https://x.io'));
+    }
+
+    public function testAFailedBinaryScrapeKeepsItsError(): void
+    {
+        $failed = self::scrapeEnvelope('', ['format' => 'binary', 'success' => false, 'status_code' => 404, 'error' => ['code' => 'ERR::SCRAPE::BAD_UPSTREAM_RESPONSE', 'message' => '404']]);
+
+        $response = $this->client([self::json($failed, 422)])->scrape(new ScrapeConfig(url: 'https://x.io/a.webp', raiseOnUpstreamError: false));
+        self::assertSame('', $response->content());
+
+        $this->expectException(UpstreamHttpClientException::class);
+        $this->client([self::json($failed, 422)])->scrape(new ScrapeConfig(url: 'https://x.io/a.webp'));
+    }
+
+    public function testAMissingLargeObjectIsAnError(): void
+    {
+        $envelope = self::scrapeEnvelope('https://api.scrapfly.io/scrape/large-object/01J0', ['format' => 'clob']);
+
+        $this->expectException(ApiHttpClientException::class);
+        $this->client([self::json($envelope), self::json(['error_id' => 'e', 'http_code' => 404, 'message' => 'expired'], 404)])
+            ->scrape(new ScrapeConfig(url: 'https://x.io'));
+    }
+
+    public function testVerifyIsLeftToTheClientUnlessSet(): void
+    {
+        $sent = [];
+        $stack = \GuzzleHttp\HandlerStack::create(new \GuzzleHttp\Handler\MockHandler([self::json(['account' => []]), self::json(['account' => []])]));
+        $stack->push(\GuzzleHttp\Middleware::history($sent));
+        $http = new \GuzzleHttp\Client(['handler' => $stack, 'verify' => '/etc/ssl/corporate-ca.pem']);
+
+        (new ScrapflyClient(self::KEY, httpClient: $http))->account();
+        (new ScrapflyClient(self::KEY, httpClient: $http, verify: false))->account();
+
+        self::assertSame('/etc/ssl/corporate-ca.pem', $sent[0]['options']['verify']);
+        self::assertFalse($sent[1]['options']['verify']);
+    }
+
     public function testConcurrentScrapeKeepsTheOrderAndReturnsFailures(): void
     {
         $blocked = self::scrapeEnvelope('', ['success' => false, 'error' => ['code' => 'ERR::ASP::SHIELD_PROTECTION_FAILED', 'message' => 'blocked']]);
@@ -263,6 +425,13 @@ final class ScrapflyClientTest extends ClientTestCase
         self::assertInstanceOf(UnblockerException::class, $results[1]);
         self::assertInstanceOf(ScrapeResponse::class, $results[2]);
         self::assertSame('three', $results[2]->content());
+
+        $results = $this->client([self::json(self::scrapeEnvelope('ok'))])->concurrentScrape([
+            new ScrapeConfig(url: 'https://x.io/1', extractionTemplate: 't', extractionEphemeralTemplate: ['a' => 1]),
+            new ScrapeConfig(url: 'https://x.io/2'),
+        ], concurrency: 2);
+        self::assertInstanceOf(\Scrapfly\Exception\ScrapeConfigException::class, $results[0]);
+        self::assertSame('ok', $results[1]->content());
     }
 
     public function testScreenshotReturnsTheImage(): void

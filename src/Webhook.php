@@ -17,7 +17,9 @@ namespace Scrapfly;
  * $payload = json_decode($body, true);
  * ```
  *
- * Verify the bytes as received, before any decoding: the signature covers them.
+ * The signature covers the body before any `Content-Encoding`: decompress a
+ * compressed delivery first. Alert webhooks sign `<timestamp>.<body>` and are not
+ * verified by this method.
  */
 final class Webhook
 {

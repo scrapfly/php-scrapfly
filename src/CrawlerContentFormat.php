@@ -14,4 +14,5 @@ enum CrawlerContentFormat: string
     case Json = 'json';
     case ExtractedData = 'extracted_data';
     case PageMetadata = 'page_metadata';
+    case PageScreenshot = 'page_screenshot';
 }

@@ -1,0 +1,94 @@
+name: Release
+
+# A version tag publishes the package. Packagist reads the tag from GitHub: this
+# workflow tests the tagged commit, checks its version, tells Packagist, and opens
+# the GitHub release with the CHANGELOG section of that version.
+#
+# PACKAGIST_KEY is the Packagist API token, or `username:token`. With the token
+# alone, the repository variable PACKAGIST_USERNAME names its account. The first
+# release creates the package, which takes the main token, not the safe one.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          coverage: none
+      - name: Check the version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          constant=$(sed -nE "s/.*const VERSION = '([^']+)';.*/\1/p" src/ScrapflyClient.php)
+          if [ "$version" != "$constant" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but ScrapflyClient::VERSION is $constant"
+            exit 1
+          fi
+          awk -v heading="## $version" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+      - run: composer validate --strict
+      - uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
+      - run: vendor/bin/phpunit
+      - run: vendor/bin/phpstan analyse --no-progress
+      - name: Publish on Packagist
+        env:
+          PACKAGIST_KEY: ${{ secrets.PACKAGIST_KEY }}
+          PACKAGIST_USERNAME: ${{ vars.PACKAGIST_USERNAME }}
+          REPOSITORY: https://github.com/${{ github.repository }}
+        run: |
+          credentials="$PACKAGIST_KEY"
+          if [ -z "$credentials" ]; then
+            echo "::error::the PACKAGIST_KEY secret is not set"
+            exit 1
+          fi
+          case "$credentials" in
+            *:*) ;;
+            *)
+              if [ -z "$PACKAGIST_USERNAME" ]; then
+                echo "::error::PACKAGIST_KEY holds a token alone: set the PACKAGIST_USERNAME repository variable"
+                exit 1
+              fi
+              credentials="$PACKAGIST_USERNAME:$credentials"
+              ;;
+          esac
+          if curl -fsS -o /dev/null https://packagist.org/packages/scrapfly/scrapfly-sdk.json; then
+            endpoint=update-package
+          else
+            endpoint=create-package
+          fi
+          answer=$(curl -sS -X POST "https://packagist.org/api/$endpoint" \
+            -H "Authorization: Bearer $credentials" \
+            -H 'Content-Type: application/json' \
+            -d "{\"repository\":\"$REPOSITORY\"}")
+          echo "$endpoint: $answer"
+          case "$answer" in
+            *'"status":"success"'*) ;;
+            *) exit 1 ;;
+          esac
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          body_path: release-notes.md
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -18,7 +18,7 @@ composer require scrapfly/scrapfly-sdk
 use Scrapfly\ScrapflyClient;
 use Scrapfly\ScrapeConfig;
 
-$client = new ScrapflyClient(key: getenv('SCRAPFLY_KEY'));
+$client = new ScrapflyClient(key: (string) getenv('SCRAPFLY_KEY'));
 
 $response = $client->scrape(new ScrapeConfig(url: 'https://web-scraping.dev/products'));
 
@@ -216,6 +216,9 @@ if (!Webhook::verifySignature($body, $_SERVER['HTTP_X_SCRAPFLY_WEBHOOK_SIGNATURE
     exit;
 }
 ```
+
+The signature covers the body before any `Content-Encoding`: decompress a
+compressed delivery before you verify it.
 
 ## Your own Guzzle client
 

@@ -62,7 +62,7 @@ final class ScreenshotConfig
     }
 
     /** @return array<string, string> */
-    public function toApiParams(string $key): array
+    public function toApiParams(#[\SensitiveParameter] string $key): array
     {
         $params = ['key' => $key, 'url' => $this->url];
         $optional = [

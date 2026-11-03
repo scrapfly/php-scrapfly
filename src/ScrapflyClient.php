@@ -39,6 +39,7 @@ use Scrapfly\Exception\TooManyRequestsException;
 use Scrapfly\Exception\TransportException;
 use Scrapfly\Exception\UnblockerException;
 use Scrapfly\Exception\UpstreamHttpClientException;
+use Scrapfly\Exception\UpstreamHttpException;
 use Scrapfly\Exception\UpstreamHttpServerException;
 use Scrapfly\Exception\WebhookException;
 
@@ -46,7 +47,7 @@ use Scrapfly\Exception\WebhookException;
  * Client of every Scrapfly API: scrape, screenshot, extraction and crawler.
  *
  * ```php
- * $client = new ScrapflyClient(key: getenv('SCRAPFLY_KEY'));
+ * $client = new ScrapflyClient(key: (string) getenv('SCRAPFLY_KEY'));
  * $response = $client->scrape(new ScrapeConfig(url: 'https://web-scraping.dev/products'));
  * echo $response->content();
  * ```
@@ -70,6 +71,9 @@ final class ScrapflyClient
     /** Attempts of a request whose connection failed. A timeout is never retried. */
     private const CONNECT_TRIES = 3;
 
+    /** The target answered an error status: the scrape ran. */
+    private const BAD_UPSTREAM_RESPONSE = 'ERR::SCRAPE::BAD_UPSTREAM_RESPONSE';
+
     /** cURL's code for a timeout, connect or read. */
     private const CURLE_OPERATION_TIMEDOUT = 28;
 
@@ -92,18 +96,26 @@ final class ScrapflyClient
     /**
      * @param ClientInterface|null $httpClient a Guzzle client of your own, for a proxy or middleware;
      *     the SDK sets its timeouts, headers and query on every request it sends
+     * @param bool|null $verify TLS verification; null keeps the Guzzle client's own setting, on by default
      */
     public function __construct(
+        #[\SensitiveParameter]
         private readonly string $key,
         string $host = self::DEFAULT_HOST,
         ?ClientInterface $httpClient = null,
-        private readonly bool $verify = true,
+        private readonly ?bool $verify = null,
     ) {
         if ($key === '') {
             throw new BadApiKeyException('The API key must be a non-empty string');
         }
         $this->host = rtrim($host, '/');
         $this->http = $httpClient ?? new Client();
+    }
+
+    /** @return array<string, mixed> what var_dump() and print_r() show: the key masked */
+    public function __debugInfo(): array
+    {
+        return ['key' => substr($this->key, 0, 9) . '...', 'host' => $this->host, 'verify' => $this->verify ?? 'client default'];
     }
 
     // -------------------------------------------------------------------------
@@ -149,8 +161,9 @@ final class ScrapflyClient
 
     /**
      * Scrape a page and return the target's own response: its status, headers and
-     * body, with the Scrapfly details in `X-Scrapfly-*` headers. A target's error
-     * status is returned, not thrown; a Scrapfly rejection is thrown.
+     * body, with the Scrapfly details in `X-Scrapfly-*` headers. A failed scrape is
+     * thrown from its `X-Scrapfly-Reject-*` headers, a target's error status as an
+     * UpstreamHttpClientException or UpstreamHttpServerException.
      */
     public function scrapeProxified(ScrapeConfig $config): ResponseInterface
     {
@@ -158,19 +171,19 @@ final class ScrapflyClient
         $params['proxified_response'] = 'true';
         $response = $this->send($config->method, '/scrape', $params, $this->scrapeOptions($config));
 
-        $rejectCode = $response->getHeaderLine('x-scrapfly-reject-code');
-        if ($rejectCode !== '') {
-            $retryable = $response->getHeaderLine('x-scrapfly-reject-retryable') === 'true';
-            $retryAfter = $response->getHeaderLine('retry-after');
-            throw $this->exceptionFor(
-                $rejectCode,
-                $response->getHeaderLine('x-scrapfly-reject-description') ?: $rejectCode,
-                $response->getStatusCode(),
-                $retryable,
-                $retryable && $retryAfter !== '' ? (int) $retryAfter : null,
-                $response->getHeaderLine('x-scrapfly-reject-doc') ?: null,
-                null,
-            );
+        $rejection = $this->rejection($response);
+        if ($rejection !== null && !($rejection instanceof UpstreamHttpException && !$config->raiseOnUpstreamError)) {
+            throw $rejection;
+        }
+        // A scrape refused (concurrency, quota) or failed after the target answered
+        // (an Unblocker block) comes back as the API's own scrape envelope, not as
+        // the target's response.
+        if (str_starts_with($response->getHeaderLine('content-type'), 'application/json')) {
+            $data = json_decode((string) $response->getBody(), true);
+            $response->getBody()->rewind();
+            if (is_array($data) && isset($data['result'], $data['config'], $data['context']) && is_array($data['result']['error'] ?? null)) {
+                $this->scrapeResponse($config, $response);
+            }
         }
 
         return $response;
@@ -189,12 +202,18 @@ final class ScrapflyClient
     {
         $concurrency ??= (int) ($this->account()['subscription']['usage']['scrape']['concurrent_limit'] ?? 1);
         $results = [];
-        $requests = function () use ($configs): \Generator {
-            foreach ($configs as $index => $config) {
-                yield $index => fn () => $this->http->sendAsync(
-                    new Request($config->method, $this->host . '/scrape'),
-                    $this->requestOptions($config->toApiParams($this->key), $this->scrapeOptions($config)),
-                );
+        $options = [];
+        foreach ($configs as $index => $config) {
+            try {
+                $options[$index] = $this->requestOptions($config->toApiParams($this->key), $this->scrapeOptions($config));
+            } catch (ScrapflyException $exception) {
+                $results[$index] = $exception;
+            }
+        }
+        // Connection failures are not retried here: each one is that scrape's result.
+        $requests = function () use ($configs, $options): \Generator {
+            foreach ($options as $index => $requestOptions) {
+                yield $index => fn () => $this->http->sendAsync(new Request($configs[$index]->method, $this->host . '/scrape'), $requestOptions);
             }
         };
         $pool = new Pool($this->http, $requests(), [
@@ -227,6 +246,10 @@ final class ScrapflyClient
         $response = $this->send('GET', '/screenshot', $config->toApiParams($this->key));
         $body = (string) $response->getBody();
         $contentType = $response->getHeaderLine('content-type');
+        $data = str_starts_with($contentType, 'application/json') ? json_decode($body, true) : null;
+        if ($response->getStatusCode() === 201 && is_array($data) && ($data['webhook_enqueued'] ?? false) === true) {
+            return new ScreenshotResponse('', $contentType, null, null, (string) ($data['job_uuid'] ?? ''));
+        }
 
         if ($response->getStatusCode() >= 300 || str_starts_with($contentType, 'application/json')) {
             $data = json_decode($body, true);
@@ -265,7 +288,7 @@ final class ScrapflyClient
             throw $this->apiException($data, $response->getStatusCode(), ExtractionApiException::class);
         }
 
-        return new ExtractionResponse($data['data'] ?? null, $data['content_type'] ?? null);
+        return new ExtractionResponse($data['data'] ?? null, $data['content_type'] ?? null, isset($data['job_uuid']) ? (string) $data['job_uuid'] : null);
     }
 
     // -------------------------------------------------------------------------
@@ -293,8 +316,12 @@ final class ScrapflyClient
         }
         $response = $this->send('POST', '/crawl', ['key' => $this->key], $options);
         $data = $this->crawlerJson($response);
+        $uuid = (string) ($data['crawler_uuid'] ?? $data['uuid'] ?? '');
+        if ($uuid === '') {
+            throw new CrawlerException('The API started no crawl: its answer carries no crawler_uuid', httpStatusCode: $response->getStatusCode(), apiResponse: $data);
+        }
 
-        return ['crawler_uuid' => (string) ($data['crawler_uuid'] ?? ''), 'status' => (string) ($data['status'] ?? '')];
+        return ['crawler_uuid' => $uuid, 'status' => (string) ($data['status'] ?? '')];
     }
 
     public function crawlStatus(string $uuid): CrawlerStatus
@@ -500,7 +527,15 @@ final class ScrapflyClient
      * @param array<array-key, string> $query
      * @param array<string, mixed> $options Guzzle request options
      */
-    private function send(string $method, string $path, array $query, array $options = [], int $tries = self::CONNECT_TRIES): ResponseInterface
+    private function send(
+        string $method,
+        string $path,
+        #[\SensitiveParameter]
+        array $query,
+        #[\SensitiveParameter]
+        array $options = [],
+        int $tries = self::CONNECT_TRIES,
+    ): ResponseInterface
     {
         $options = $this->requestOptions($query, $options);
         for ($attempt = 1; ; $attempt++) {
@@ -523,7 +558,7 @@ final class ScrapflyClient
      *
      * @return array<string, mixed>
      */
-    private function requestOptions(array $query, array $options): array
+    private function requestOptions(#[\SensitiveParameter] array $query, #[\SensitiveParameter] array $options): array
     {
         $headers = array_change_key_case($options[RequestOptions::HEADERS] ?? [], CASE_LOWER) + [
             'user-agent' => 'PHP Scrapfly SDK/' . self::VERSION,
@@ -534,11 +569,13 @@ final class ScrapflyClient
         return array_replace([
             RequestOptions::QUERY => http_build_query($query, '', '&', PHP_QUERY_RFC3986),
             RequestOptions::HTTP_ERRORS => false,
-            RequestOptions::VERIFY => $this->verify,
+            // The API never redirects. A target's 3xx a proxified scrape passes on
+            // must not be followed from here, outside Scrapfly's proxies.
+            RequestOptions::ALLOW_REDIRECTS => false,
             RequestOptions::CONNECT_TIMEOUT => self::CONNECT_TIMEOUT,
             RequestOptions::TIMEOUT => self::READ_TIMEOUT,
             RequestOptions::DECODE_CONTENT => true,
-        ], $options, [RequestOptions::HEADERS => $headers]);
+        ], $this->verify === null ? [] : [RequestOptions::VERIFY => $this->verify], $options, [RequestOptions::HEADERS => $headers]);
     }
 
     /** @return array<string, mixed> */
@@ -554,7 +591,7 @@ final class ScrapflyClient
         ];
     }
 
-    private function isTimeout(GuzzleException $exception): bool
+    private function isTimeout(#[\SensitiveParameter] GuzzleException $exception): bool
     {
         $context = $exception instanceof RequestException || $exception instanceof ConnectException ? $exception->getHandlerContext() : [];
 
@@ -563,7 +600,7 @@ final class ScrapflyClient
     }
 
     /** The HTTP client's exception is not chained: its message prints the key. */
-    private function transportException(GuzzleException $exception): TransportException
+    private function transportException(#[\SensitiveParameter] GuzzleException $exception): TransportException
     {
         return new TransportException(Util::maskKey($exception->getMessage()), $this->isTimeout($exception));
     }
@@ -575,8 +612,18 @@ final class ScrapflyClient
     private function scrapeResponse(ScrapeConfig $config, ResponseInterface $response): ScrapeResponse
     {
         if ($config->method === 'HEAD') {
-            // A HEAD answer carries no body: the result is built from its headers.
+            // A HEAD answer carries no body: the result is built from its headers,
+            // a failure from its X-Scrapfly-Reject-* headers.
+            $rejection = $this->rejection($response);
+            if ($rejection !== null && !($rejection instanceof UpstreamHttpException && !$config->raiseOnUpstreamError)) {
+                throw $rejection;
+            }
             $status = $response->getStatusCode();
+            $targetHeaders = array_filter(
+                $response->getHeaders(),
+                static fn (string $name): bool => !str_starts_with(strtolower($name), 'x-scrapfly-'),
+                ARRAY_FILTER_USE_KEY,
+            );
 
             return new ScrapeResponse([
                 'config' => $config->toApiParams('REDACTED'),
@@ -587,7 +634,7 @@ final class ScrapflyClient
                     'status_code' => $status,
                     'content' => '',
                     'format' => 'text',
-                    'response_headers' => array_map(static fn (array $values): string => implode(', ', $values), $response->getHeaders()),
+                    'response_headers' => array_map(static fn (array $values): string => implode(', ', $values), $targetHeaders),
                     'request_headers' => [],
                 ],
             ], $response->getHeaders());
@@ -600,14 +647,18 @@ final class ScrapflyClient
         $format = $data['result']['format'] ?? null;
         if ($format === 'clob' || $format === 'blob') {
             $data['result'] = $this->fetchLargeObject($data['result'], $format);
-        } elseif ($format === 'binary') {
+        } elseif ($format === 'binary' && ($data['result']['content'] ?? '') !== '') {
             // An inline binary document comes base64 encoded; a large one is fetched as its bytes.
-            $data['result']['content'] = base64_decode((string) ($data['result']['content'] ?? ''), true)
-                ?: throw new ScrapflyException('The binary content is not valid base64');
+            $bytes = base64_decode((string) $data['result']['content'], true);
+            if ($bytes === false && ($data['result']['success'] ?? false) === true) {
+                throw new ScrapflyException('The binary content is not valid base64');
+            }
+            $data['result']['content'] = $bytes === false ? $data['result']['content'] : $bytes;
         }
         $scrape = new ScrapeResponse($data, $response->getHeaders());
         $result = $data['result'];
-        if (($result['status'] ?? null) === 'DONE' && ($result['success'] ?? false) === true) {
+        // QUEUED: a scrape with a webhook, delivered to it later.
+        if (($result['status'] ?? null) === 'QUEUED' || (($result['status'] ?? null) === 'DONE' && ($result['success'] ?? false) === true)) {
             return $scrape;
         }
 
@@ -618,20 +669,52 @@ final class ScrapflyClient
         $statusCode = (int) ($result['status_code'] ?? $error['http_code'] ?? $response->getStatusCode());
         $message = (string) ($error['message'] ?? $code);
         $retryable = ($error['retryable'] ?? false) === true;
-        $retryAfter = $retryable ? (int) ($response->getHeaderLine('x-retry') ?: 5) : null;
+        $retryAfter = $retryable ? (int) ($response->getHeaderLine('retry-after') ?: 5) : null;
         $links = is_array($error['links'] ?? null) ? $error['links'] : [];
         $documentation = $error['doc_url'] ?? $links['Related Error Doc'] ?? 'https://scrapfly.io/docs/scrape-api/errors';
 
-        if ($code === 'ERR::SCRAPE::BAD_UPSTREAM_RESPONSE') {
-            if (!$config->raiseOnUpstreamError) {
-                return $scrape;
-            }
-            $upstream = $statusCode >= 500 ? UpstreamHttpServerException::class : UpstreamHttpClientException::class;
-
-            throw new $upstream($message, $code, $statusCode, $retryable, $retryAfter, $documentation, $data);
+        if ($code === self::BAD_UPSTREAM_RESPONSE && !$config->raiseOnUpstreamError) {
+            return $scrape;
         }
 
-        throw $this->exceptionFor($code, $message, $statusCode, $retryable, $retryAfter, $documentation, $data);
+        // A failed scrape carries the target's status: its 401 or 429 says nothing of the account.
+        $targetStatus = ($result['success'] ?? null) === false;
+
+        throw $this->exceptionFor($code, $message, $statusCode, $retryable, $retryAfter, $documentation, $data, targetStatus: $targetStatus);
+    }
+
+    /**
+     * The failure a proxified or HEAD answer reports in its X-Scrapfly-Reject-*
+     * headers. A failed scrape names its `ERR::` code there and its status in
+     * Reject-Http-Code; a request refused before any scrape puts its status in
+     * Reject-Code and has no code.
+     */
+    private function rejection(ResponseInterface $response): ?ScrapflyException
+    {
+        $reject = $response->getHeaderLine('x-scrapfly-reject-code');
+        if ($reject === '') {
+            return null;
+        }
+        $retryable = $response->getHeaderLine('x-scrapfly-reject-retryable') === 'true';
+        $retryAfter = $response->getHeaderLine('retry-after');
+        if (ctype_digit($reject)) {
+            $code = '';
+            $status = (int) $reject;
+        } else {
+            $code = $reject;
+            $httpCode = $response->getHeaderLine('x-scrapfly-reject-http-code');
+            $status = $httpCode === '' ? $response->getStatusCode() : (int) $httpCode;
+        }
+
+        return $this->exceptionFor(
+            $code,
+            $response->getHeaderLine('x-scrapfly-reject-description') ?: $reject,
+            $status,
+            $retryable,
+            $retryable && $retryAfter !== '' ? (int) $retryAfter : null,
+            $response->getHeaderLine('x-scrapfly-reject-doc') ?: null,
+            null,
+        );
     }
 
     /**
@@ -652,6 +735,9 @@ final class ScrapflyClient
         parse_str($parts['query'] ?? '', $query);
         $query = array_map(strval(...), array_filter($query, is_string(...)));
         $response = $this->send('GET', $parts['path'], ['key' => $this->key] + $query, [RequestOptions::HEADERS => ['accept' => '*/*']]);
+        if ($response->getStatusCode() !== 200) {
+            throw $this->apiException($this->decodeJson($response), $response->getStatusCode(), ApiHttpClientException::class);
+        }
         $result['content'] = (string) $response->getBody();
         $result['format'] = $format === 'clob' ? 'text' : 'binary';
 
@@ -748,24 +834,29 @@ final class ScrapflyClient
         $body = $response->getBody();
         $buffer = '';
         $done = false;
-        while (!$done && !$body->eof()) {
-            $buffer .= $body->read(8192);
-            $buffer = str_replace("\r\n", "\n", $buffer);
-            while (($end = strpos($buffer, "\n\n")) !== false) {
-                $frame = substr($buffer, 0, $end);
-                $buffer = substr($buffer, $end + 2);
-                $event = $this->promptEvent($frame);
-                if ($event === null) {
-                    continue;
-                }
-                yield $event;
-                if ($event->isDone()) {
-                    $done = true;
-                    break;
+        // The connection is released however the stream ends: done, an error frame,
+        // or a caller that stops iterating.
+        try {
+            while (!$done && !$body->eof()) {
+                $buffer .= $body->read(8192);
+                $buffer = str_replace("\r\n", "\n", $buffer);
+                while (($end = strpos($buffer, "\n\n")) !== false) {
+                    $frame = substr($buffer, 0, $end);
+                    $buffer = substr($buffer, $end + 2);
+                    $event = $this->promptEvent($frame);
+                    if ($event === null) {
+                        continue;
+                    }
+                    yield $event;
+                    if ($event->isDone()) {
+                        $done = true;
+                        break;
+                    }
                 }
             }
+        } finally {
+            $body->close();
         }
-        $body->close();
         if (!$done) {
             throw new CrawlerException('The prompt stream ended without its done frame', 'ERR::CRAWLER::PROMPT_GENERATION_FAILED');
         }
@@ -786,7 +877,11 @@ final class ScrapflyClient
         if ($event === null || $data === []) {
             return null;
         }
-        $payload = json_decode(implode("\n", $data), true, flags: JSON_THROW_ON_ERROR);
+        try {
+            $payload = json_decode(implode("\n", $data), true, flags: JSON_THROW_ON_ERROR);
+        } catch (\JsonException $exception) {
+            throw new CrawlerException("The prompt stream sent a {$event} frame that is not JSON: {$exception->getMessage()}", 'ERR::CRAWLER::PROMPT_GENERATION_FAILED');
+        }
         if ($event === 'error') {
             $payload = is_array($payload) ? $payload : ['message' => (string) $payload];
 
@@ -875,11 +970,13 @@ final class ScrapflyClient
         ?string $documentation,
         ?array $data,
         string $fallback = HttpException::class,
+        bool $targetStatus = false,
     ): ScrapflyException {
         $code = $code === '' ? null : $code;
         $class = match (true) {
-            $status === 401 => BadApiKeyException::class,
-            $status === 429 && !str_contains((string) $code, '::THROTTLE::') => TooManyRequestsException::class,
+            $code === self::BAD_UPSTREAM_RESPONSE => $status >= 500 ? UpstreamHttpServerException::class : UpstreamHttpClientException::class,
+            !$targetStatus && $status === 401 => BadApiKeyException::class,
+            !$targetStatus && $status === 429 && !str_contains((string) $code, '::THROTTLE::') => TooManyRequestsException::class,
             default => self::RESOURCE_EXCEPTIONS[explode('::', (string) $code)[1] ?? ''] ?? ($status >= 500 ? ApiHttpServerException::class : $fallback),
         };
 

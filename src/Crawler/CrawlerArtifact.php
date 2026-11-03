@@ -15,6 +15,8 @@ final class CrawlerArtifact
 
     public function save(string $path): void
     {
-        file_put_contents($path, $this->data);
+        if (file_put_contents($path, $this->data) === false) {
+            throw new \RuntimeException("Cannot write {$path}");
+        }
     }
 }

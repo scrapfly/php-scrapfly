@@ -17,7 +17,7 @@ final class CrawlerStatus
         return (string) ($this->data['crawler_uuid'] ?? '');
     }
 
-    /** `PENDING`, `RUNNING`, `DONE` or `CANCELLED`. A failed crawl is `DONE`, not successful. */
+    /** `PENDING`, `RUNNING`, `PAUSED`, `DONE` or `CANCELLED`. A failed crawl is `DONE`, not successful. */
     public function status(): string
     {
         return (string) ($this->data['status'] ?? '');
@@ -25,7 +25,8 @@ final class CrawlerStatus
 
     public function isRunning(): bool
     {
-        return in_array($this->status(), ['PENDING', 'RUNNING'], true);
+        // A PAUSED crawl resumes on its own.
+        return in_array($this->status(), ['PENDING', 'RUNNING', 'PAUSED'], true);
     }
 
     public function isComplete(): bool

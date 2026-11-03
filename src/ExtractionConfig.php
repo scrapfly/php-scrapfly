@@ -49,7 +49,7 @@ final class ExtractionConfig
     }
 
     /** @return array<string, string> */
-    public function toApiParams(string $key): array
+    public function toApiParams(#[\SensitiveParameter] string $key): array
     {
         $params = ['key' => $key, 'content_type' => $this->contentType];
         if ($this->url !== null) {

@@ -88,9 +88,12 @@ final class CrawlerConfig
         ?bool $unblocker = null,
         ?bool $asp = null,
     ) {
-        $seeds = count(array_filter([$url, $urlList, $remoteUrlList], static fn ($seed): bool => $seed !== null && $seed !== []));
+        $seeds = count(array_filter([$url, $urlList, $remoteUrlList], static fn ($seed): bool => $seed !== null));
         if ($seeds !== 1) {
             throw new CrawlerConfigException('Pass exactly one of url, urlList or remoteUrlList');
+        }
+        if ($urlList === []) {
+            throw new CrawlerConfigException('urlList is empty');
         }
         if ($excludePaths !== null && $includeOnlyPaths !== null) {
             throw new CrawlerConfigException('excludePaths and includeOnlyPaths are exclusive');

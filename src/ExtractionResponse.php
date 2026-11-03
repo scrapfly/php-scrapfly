@@ -10,6 +10,8 @@ final class ExtractionResponse
     public function __construct(
         public readonly mixed $data,
         public readonly ?string $contentType,
+        /** The job a webhook delivers the extraction to; data is then null. */
+        public readonly ?string $jobUuid = null,
     ) {
     }
 }

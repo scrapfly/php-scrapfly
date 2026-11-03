@@ -2,15 +2,35 @@ name: Internal references
 
 # This repository is public. A comment, a doc or a test fixture that names a
 # private path, a dev hostname or an internal ticket ships to everyone who
-# clones it, and stays in the history afterwards. Catch it before the merge.
+# clones it, and stays in the history afterwards. Catch it before the merge:
+# the tree as it is, and every line each new commit adds, since a leak a later
+# commit removes is still in the history.
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - run: scripts/check-internal-refs.sh
+      - name: Commits of the pull request
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/check-internal-refs.sh --range "$BASE..$HEAD"
+      - name: Commits of the push
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: scripts/check-internal-refs.sh --range "$BEFORE..$GITHUB_SHA"

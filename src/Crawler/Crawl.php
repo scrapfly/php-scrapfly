@@ -63,18 +63,22 @@ final class Crawl
 
     /**
      * Poll until the crawl ends. With `$searchable`, also wait for its search
-     * index to answer queries, which it does after the crawl is DONE.
+     * index to answer queries, which it does after the crawl is DONE. A failed
+     * crawl throws, and so does a cancelled one unless `$allowCancelled`.
      *
      * @param float $maxWait seconds; 0 waits without a limit
      */
-    public function wait(float $pollInterval = 5.0, float $maxWait = 0.0, bool $searchable = false): self
+    public function wait(float $pollInterval = 5.0, float $maxWait = 0.0, bool $searchable = false, bool $allowCancelled = false): self
     {
         $deadline = $maxWait > 0 ? microtime(true) + $maxWait : null;
         while (true) {
             $status = $this->status();
-            $ended = $status->isComplete() || $status->isFailed() || $status->isCancelled();
+            $ended = $status->isFinished() || $status->status() === 'DONE' || $status->isCancelled();
             if ($ended && $status->isFailed()) {
                 throw new CrawlerException("Crawl {$this->uuid()} failed: " . ($status->state()['stop_reason'] ?? 'unknown'), 'ERR::CRAWLER::FAILED');
+            }
+            if ($status->isCancelled() && !$allowCancelled) {
+                throw new CrawlerException("Crawl {$this->uuid()} was cancelled", 'ERR::CRAWLER::CANCELLED');
             }
             $indexSettled = !$searchable || $status->isSearchable() || in_array($status->search()['status'] ?? 'DISABLED', ['FAILED', 'DISABLED'], true);
             if ($ended && $indexSettled) {
