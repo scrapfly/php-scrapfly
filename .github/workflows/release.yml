@@ -7,7 +7,7 @@ name: Release
 # test job passed.
 #
 # PACKAGIST_KEY is the Packagist API token, or `username:token`. With the token
-# alone, the repository variable PACKAGIST_USERNAME names its account. The first
+# alone, PACKAGIST_USERNAME (a repository variable or secret) names its account. The first
 # release creates the package, which takes the main token, not the safe one.
 
 on:
@@ -62,7 +62,7 @@ jobs:
       - name: Publish on Packagist
         env:
           PACKAGIST_KEY: ${{ secrets.PACKAGIST_KEY }}
-          PACKAGIST_USERNAME: ${{ vars.PACKAGIST_USERNAME }}
+          PACKAGIST_USERNAME: ${{ vars.PACKAGIST_USERNAME || secrets.PACKAGIST_USERNAME }}
           REPOSITORY: https://github.com/${{ github.repository }}
         run: |
           credentials="$PACKAGIST_KEY"
@@ -74,7 +74,7 @@ jobs:
             *:*) ;;
             *)
               if [ -z "$PACKAGIST_USERNAME" ]; then
-                echo "::error::PACKAGIST_KEY holds a token alone: set the PACKAGIST_USERNAME repository variable"
+                echo "::error::PACKAGIST_KEY holds a token alone: set PACKAGIST_USERNAME, a repository variable or secret"
                 exit 1
               fi
               credentials="$PACKAGIST_USERNAME:$credentials"
