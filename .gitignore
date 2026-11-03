@@ -1,0 +1,4 @@
+# A library ships no lock file: consumers resolve their own versions.
+/vendor/
+/composer.lock
+/.phpunit.cache/

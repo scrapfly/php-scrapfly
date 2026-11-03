@@ -1,0 +1,7 @@
+parameters:
+    level: 8
+    paths:
+        - src
+    # The public methods check their arguments at runtime: a PHPDoc type is a
+    # promise the caller can break.
+    treatPhpDocTypesAsCertain: false

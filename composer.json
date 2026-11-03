@@ -1,0 +1,38 @@
+{
+    "name": "scrapfly/scrapfly-sdk",
+    "description": "Official PHP SDK for the Scrapfly platform: web scraping, screenshots, AI extraction, crawling, and a remote anti-bot browser.",
+    "type": "library",
+    "license": "BSD-2-Clause",
+    "keywords": ["scrapfly", "web-scraping", "scraping-api", "crawler", "screenshot", "data-extraction", "anti-bot", "proxy", "headless-browser", "sdk"],
+    "homepage": "https://scrapfly.io/docs/sdk/php",
+    "support": {
+        "docs": "https://scrapfly.io/docs/sdk/php",
+        "issues": "https://github.com/scrapfly/php-scrapfly/issues",
+        "source": "https://github.com/scrapfly/php-scrapfly"
+    },
+    "authors": [
+        {"name": "Scrapfly", "homepage": "https://scrapfly.io"}
+    ],
+    "require": {
+        "php": ">=8.3",
+        "ext-json": "*",
+        "guzzlehttp/guzzle": "^7.8"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.5 || ^12.0",
+        "phpstan/phpstan": "^2.1"
+    },
+    "autoload": {
+        "psr-4": {"Scrapfly\\": "src/"}
+    },
+    "autoload-dev": {
+        "psr-4": {"Scrapfly\\Tests\\": "tests/"}
+    },
+    "scripts": {
+        "test": "phpunit",
+        "analyse": "phpstan analyse"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
