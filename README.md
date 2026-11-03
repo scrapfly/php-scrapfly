@@ -193,6 +193,25 @@ once. A prompt or an extraction is sent once and never retried. The schema
 constrains the model as it generates and is not checked again afterwards:
 validate anything you act on.
 
+### Refresh
+
+A crawl can re-scrape its own URLs on a period, in place: same uuid, same
+artifacts, same search index.
+
+```php
+$client->crawlRefreshSettings($uuid, enabled: true, intervalSeconds: 86400);
+$client->crawlRefreshNow($uuid);
+$history = $client->crawlRefreshHistory($uuid);
+```
+
+### WARC
+
+```php
+foreach ($client->crawlArtifact($uuid, 'warc')->pages() as $page) {
+    echo $page['status_code'], ' ', $page['url'], PHP_EOL;
+}
+```
+
 ## Concurrent scrapes
 
 ```php
@@ -204,6 +223,88 @@ $results = $client->concurrentScrape([
 
 The results come back in the order of the configs, a failed scrape as its
 exception. The concurrency defaults to your account's limit.
+
+## Batch
+
+One request, up to 100 scrapes, each result streamed back as soon as its
+scrape finishes. Every config needs a correlation id of its own, which keys
+its result:
+
+```php
+foreach ($client->scrapeBatch([
+    new ScrapeConfig(url: 'https://web-scraping.dev/product/1', correlationId: 'p1'),
+    new ScrapeConfig(url: 'https://web-scraping.dev/product/2', correlationId: 'p2'),
+]) as $correlationId => $result) {
+    echo $correlationId, ': ', $result instanceof ScrapflyException ? $result->getMessage() : $result->statusCode(), PHP_EOL;
+}
+```
+
+A failed scrape is yielded as its exception, never thrown. A config with
+`proxifiedResponse: true` yields the target's own response, a PSR-7
+`ResponseInterface` (`getStatusCode()`, `getBody()`), or its exception when
+Scrapfly failed the scrape. Pass `format: 'msgpack'` for msgpack parts. Batch
+is not on the FREE plan.
+
+`scrapeBatchAsync()` runs the same batch on Guzzle's promises: each result goes
+to a callback as soon as its part arrives, and the batch shares Guzzle's event
+loop with your other async requests. A page too large for the API to inline in
+its part (past 5 MiB) reaches the callback once the transfer is over, its
+content fetched then.
+
+```php
+$promise = $client->scrapeBatchAsync($configs, function (string $correlationId, $result): void {
+    // called as each scrape finishes
+});
+$promise->wait();
+```
+
+## Cloud Browser API
+
+```php
+use Scrapfly\BrowserConfig;
+use Scrapfly\UnblockConfig;
+
+// The CDP WebSocket URL, for any CDP client
+$wsUrl = $client->cloudBrowserUrl(new BrowserConfig(proxyPool: 'residential', country: 'us'));
+
+// Past the anti-bot first: the browser comes back with its cookies and clearance
+$session = $client->cloudBrowserUnblock(new UnblockConfig(url: 'https://web-scraping.dev/products'));
+// $session['ws_url'] is the browser's CDP URL: connect your CDP client to it
+$client->cloudBrowserSessionStop($session['session_id']);
+```
+
+Both URLs carry your API key, and `cloudBrowserUrl()` also the
+`BrowserConfig` secrets you set (`vaultKey`, VNC and WebRTC passwords, a BYOP
+proxy's credentials): keep them out of logs.
+
+The client also manages the account's extensions (`cloudBrowserExtension*`),
+credential vaults and their items (`cloudBrowserVault*`), and reads the
+recording of a `debug` session (`cloudBrowserPlayback()`,
+`cloudBrowserWaitForPlayback()`, `cloudBrowserVideo()`). The vault methods
+send the vault key as the `X-Vault-Key` header.
+
+## Schedules
+
+```php
+use Scrapfly\ScheduleRecurrence;
+use Scrapfly\ScheduleRequest;
+
+$schedule = $client->createScrapeSchedule(
+    ['url' => 'https://web-scraping.dev/products', 'render_js' => true],
+    new ScheduleRequest(webhookName: 'my-webhook', recurrence: new ScheduleRecurrence(cron: '0 */6 * * *')),
+);
+$client->pauseSchedule($schedule['id']);
+```
+
+`createScreenshotSchedule()` and `createCrawlerSchedule()` work the same way.
+A schedule delivers each run to its webhook.
+
+## Monitoring and classify
+
+`monitoringMetrics()`, `monitoringTargetMetrics()`, `browserMonitoringMetrics()`
+and `browserMonitoringTimeseries()` read the Monitoring API (Enterprise plans).
+`classify()` tells whether a response you fetched yourself is an anti-bot
+block.
 
 ## Webhooks
 

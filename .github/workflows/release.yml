@@ -1,8 +1,10 @@
 name: Release
 
 # A version tag publishes the package. Packagist reads the tag from GitHub: this
-# workflow tests the tagged commit, checks its version, tells Packagist, and opens
-# the GitHub release with the CHANGELOG section of that version.
+# workflow runs the whole test matrix and the internal references check on the
+# tagged commit, checks its version, tells Packagist, and opens the GitHub release
+# with the CHANGELOG section of that version. Nothing is published unless every
+# test job passed.
 #
 # PACKAGIST_KEY is the Packagist API token, or `username:token`. With the token
 # alone, the repository variable PACKAGIST_USERNAME names its account. The first
@@ -20,7 +22,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  internal-refs:
+    uses: ./.github/workflows/internal-refs.yml
+
   release:
+    needs: [tests, internal-refs]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,9 +59,6 @@ jobs:
             exit 1
           fi
       - run: composer validate --strict
-      - uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
-      - run: vendor/bin/phpunit
-      - run: vendor/bin/phpstan analyse --no-progress
       - name: Publish on Packagist
         env:
           PACKAGIST_KEY: ${{ secrets.PACKAGIST_KEY }}

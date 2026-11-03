@@ -52,6 +52,7 @@ final class ScrapeConfig
      * @param list<array<string, mixed>>|null $jsScenario
      * @param list<string> $lang
      * @param int|null $timeout milliseconds
+     * @param bool $proxifiedResponse answer with the target's own response; a batch part, or scrapeProxified() for one scrape
      * @param bool|null $unblocker deprecated: use `proxyPool` (`ProxyPool::UnblockerUltra` for the Unblocker)
      * @param bool|null $asp deprecated: use `proxyPool` (`ProxyPool::UnblockerUltra` for the Unblocker)
      */
@@ -98,6 +99,7 @@ final class ScrapeConfig
         public ?bool $autoScroll = null,
         public ?string $browserBrand = null,
         public ?string $geolocation = null,
+        public bool $proxifiedResponse = false,
         ?bool $unblocker = null,
         ?bool $asp = null,
     ) {
@@ -223,6 +225,9 @@ final class ScrapeConfig
             if ($this->autoScroll !== null) {
                 $params['auto_scroll'] = Util::bool($this->autoScroll);
             }
+        }
+        if ($this->proxifiedResponse) {
+            $params['proxified_response'] = 'true';
         }
         // The wire key stays `asp` for both deprecated names.
         if ($this->asp) {

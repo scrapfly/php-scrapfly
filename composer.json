@@ -16,6 +16,7 @@
     "require": {
         "php": ">=8.3",
         "ext-json": "*",
+        "ext-zlib": "*",
         "guzzlehttp/guzzle": "^7.15.2",
         "guzzlehttp/psr7": "^2.13"
     },

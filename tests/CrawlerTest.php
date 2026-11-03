@@ -6,11 +6,13 @@ namespace Scrapfly\Tests;
 
 use GuzzleHttp\Psr7\Response;
 use Scrapfly\Crawler\Crawl;
+use Scrapfly\Crawler\CrawlerArtifact;
 use Scrapfly\CrawlerConfig;
 use Scrapfly\CrawlerContentFormat;
 use Scrapfly\CrawlerSearchMode;
 use Scrapfly\Exception\CrawlerConfigException;
 use Scrapfly\Exception\CrawlerException;
+use Scrapfly\Exception\ScrapflyException;
 use Scrapfly\ProxyPool;
 
 final class CrawlerTest extends ClientTestCase
@@ -291,5 +293,103 @@ final class CrawlerTest extends ClientTestCase
 
         $this->expectExceptionMessage('seed_url_failed');
         Crawl::fromUuid($client, 'c1')->wait(pollInterval: 0.0);
+    }
+
+    public function testAUrlListAloneSendsAnEmptyConfigObject(): void
+    {
+        $client = $this->client([self::json(['crawler_uuid' => 'c1', 'status' => 'PENDING'])]);
+
+        $client->startCrawl(new CrawlerConfig(urlList: ['https://x.io/a']));
+
+        $body = (string) $this->sent[0]['request']->getBody();
+        self::assertMatchesRegularExpression('/name="config"; filename="config.json"\r\n(?:[^\r\n]+\r\n)*\r\n\{\}\r\n/', $body);
+    }
+
+    public function testRefreshCallsSendTheCrawlBodyKeysAndReadTheBlock(): void
+    {
+        $block = ['enabled' => true, 'interval_seconds' => 86400, 'status' => 'SCHEDULED', 'generation' => 0, 'history' => [['at' => '2026-11-03T10:00:00Z']]];
+        $client = $this->client([self::json(['crawler_uuid' => 'c1', 'refresh' => $block]), self::json(['crawler_uuid' => 'c1', 'refresh' => ['status' => 'RUNNING'] + $block], 202), self::json(['crawler_uuid' => 'c1', 'refresh' => $block]), new \GuzzleHttp\Exception\ConnectException('reset', new \GuzzleHttp\Psr7\Request('POST', '/'))]);
+
+        self::assertSame('SCHEDULED', $client->crawlRefreshSettings('c1', enabled: true, intervalSeconds: 86400)['status']);
+        self::assertSame('PATCH', $this->sent[0]['request']->getMethod());
+        self::assertSame(['refresh' => true, 'refresh_interval' => 86400], $this->jsonBody(0));
+
+        self::assertSame('RUNNING', $client->crawlRefreshNow('c1')['status']);
+        self::assertSame([['at' => '2026-11-03T10:00:00Z']], $client->crawlRefreshHistory('c1', limit: 5));
+        self::assertSame('5', $this->query(2)['limit']);
+        self::assertStringEndsWith('/crawl/c1/refresh/history', $this->sent[2]['request']->getUri()->getPath());
+
+        // A refresh re-scrapes the whole crawl: a connection that failed is not retried.
+        try {
+            $client->crawlRefreshNow('c1');
+            self::fail('the failed refresh did not throw');
+        } catch (\Scrapfly\Exception\TransportException) {
+        }
+        self::assertCount(4, $this->sent);
+    }
+
+    public function testRefreshSettingsNeedsAChangeInRange(): void
+    {
+        $client = $this->client([]);
+        $this->expectException(CrawlerConfigException::class);
+        $client->crawlRefreshSettings('c1', intervalSeconds: 60);
+    }
+
+    public function testWarcPagesReadEveryGzipMember(): void
+    {
+        $page = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Box</h1>\r\n\r\nafter the blank line";
+        $records = [
+            self::warcRecord('warcinfo', null, "software: crawler\r\n"),
+            self::warcRecord('request', 'https://x.io/a', "GET /a HTTP/1.1\r\nHost: x.io\r\n\r\n"),
+            self::warcRecord('response', 'https://x.io/a', $page),
+            self::warcRecord('response', 'https://x.io/big', "HTTP/1.1 404 Not Found\r\n\r\n" . str_repeat(random_bytes(1024), 200)),
+        ];
+
+        foreach ([implode('', $records), implode('', array_map('gzencode', $records))] as $data) {
+            $pages = (new CrawlerArtifact('warc', $data))->pages();
+
+            self::assertCount(2, $pages);
+            self::assertSame('https://x.io/a', $pages[0]['url']);
+            self::assertSame(200, $pages[0]['status_code']);
+            self::assertSame('text/html', $pages[0]['headers']['content-type']);
+            self::assertSame("<h1>Box</h1>\r\n\r\nafter the blank line", $pages[0]['content']);
+            self::assertSame(404, $pages[1]['status_code']);
+            self::assertSame(204800, strlen($pages[1]['content']));
+        }
+    }
+
+    public function testWarcPagesJoinARepeatedHeader(): void
+    {
+        $pages = (new CrawlerArtifact('warc', self::warcRecord('response', 'https://x.io/', "HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\nok")))->pages();
+
+        self::assertSame('a=1, b=2', $pages[0]['headers']['set-cookie']);
+    }
+
+    public function testAWarcRecordWithoutAValidLengthIsAnError(): void
+    {
+        // A negative length rewinds onto the same record: it would loop until memory runs out.
+        $record = "WARC/1.1\r\nWARC-Type: response\r\nContent-Length: -40\r\n\r\nHTTP/1.1 200 OK\r\n\r\n";
+        $this->expectException(ScrapflyException::class);
+        $this->expectExceptionMessage('no valid Content-Length');
+        (new CrawlerArtifact('warc', $record))->pages();
+    }
+
+    public function testBytesAfterTheLastGzipMemberAreAnError(): void
+    {
+        $this->expectExceptionMessage('not gzip');
+        (new CrawlerArtifact('warc', gzencode(self::warcRecord('response', 'https://x.io/', "HTTP/1.1 200 OK\r\n\r\nok")) . 'trailing'))->pages();
+    }
+
+    public function testPagesReadsOnlyAWarc(): void
+    {
+        $this->expectException(\LogicException::class);
+        (new CrawlerArtifact('har', '{}'))->pages();
+    }
+
+    private static function warcRecord(string $type, ?string $uri, string $block): string
+    {
+        $headers = "WARC/1.1\r\nWARC-Type: {$type}\r\n" . ($uri === null ? '' : "WARC-Target-URI: {$uri}\r\n") . 'Content-Length: ' . strlen($block) . "\r\n";
+
+        return $headers . "\r\n" . $block . "\r\n\r\n";
     }
 }

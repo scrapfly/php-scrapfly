@@ -329,10 +329,11 @@ final class ScrapflyClientTest extends ClientTestCase
 
     public function testAProxifiedTargetErrorIsAnUpstreamException(): void
     {
+        // As the API sends it: the error's own code, 200, in Reject-Http-Code.
         $client = $this->client([new Response(503, [
             'x-scrapfly-reject-code' => 'ERR::SCRAPE::BAD_UPSTREAM_RESPONSE',
             'x-scrapfly-reject-description' => 'The target answered 503',
-            'x-scrapfly-reject-http-code' => '503',
+            'x-scrapfly-reject-http-code' => '200',
             'x-scrapfly-reject-retryable' => 'false',
         ], 'down')]);
 
