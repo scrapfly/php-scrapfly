@@ -2,11 +2,9 @@
 # Refuse to publish internal-only references.
 #
 # This repository is public. Everything tracked here is readable by customers,
-# competitors and crawlers, comments included. The patterns below are things
-# that only exist inside the private monorepo: source layout, dev hostnames,
-# ticket ids, agent scratch paths, and real API keys. A comment may explain
-# WHAT the API does; it may not say WHERE our server code lives. A doc may show
-# where a key goes; it may not contain one.
+# competitors and crawlers, comments included. A comment may explain WHAT the
+# API does; it may not name internal systems. A doc may show where a key goes;
+# it may not contain one.
 #
 # Usage:  scripts/check-internal-refs.sh [--staged | --range BASE..HEAD]
 #   (no args)           scan every tracked file    (what CI runs on a push)
@@ -14,8 +12,11 @@
 #   --range BASE..HEAD  scan the lines each commit of the range adds, so a
 #                       leak removed by a later commit still fails (pull requests)
 #
-# Checks: every tracked text file against the pattern list below, plus a
-# refusal of tracked executables, whose build paths no text search can see.
+# Checks: every tracked text file against the patterns below, plus a refusal
+# of tracked executables, whose build paths no text search can see.
+#
+# INTERNAL_REFS_PATTERNS_FILE, when set, names a file of more patterns, one
+# extended regex per line, comments and blank lines ignored.
 #
 # An accepted exception goes in .internal-refs-allow, one extended regex per
 # line, matched against "path:line:text" (or the bare path, for an executable).
@@ -29,23 +30,29 @@ allow_file=".internal-refs-allow"
 # One pattern per class. Kept separate rather than alternated into a single
 # regex so a hit names the class it violated.
 patterns=(
-  'apps/scrapfly/'                        # monorepo application paths
-  'scrapfly-apps'                         # the private monorepo itself
-  'scrapfly-api/pkg'                      # api internals
-  'web-app/src/'                          # dashboard internals
-  'scrape_engine/'                        # scrape engine internals
-  '[a-z0-9-]+\.(scrapfly|web-scraping-dev)[a-z0-9.-]*\.?(home|local)\b'  # internal dev hostnames
-  '(scrapfly|web-scraping-dev)[a-z0-9.-]*\.(home|local)\b'
   '/root/'                                # agent and developer machine paths
   '/home/[a-z]'
-  '/opt/(go-sdk|mcp-oss)'                 # container-only replace targets
   '\.claude/projects/'                    # agent session and memory paths
-  'TIC-[0-9A-Fa-f]{4}-[0-9]'              # support ticket ids
-  '(SCRAPE-ENGINE|CLOUD-BROWSER|SCRAPIUM|WEB-APP|API)-[0-9][0-9A-Z]*'  # sentry issue ids
-  'production-[0-9]{6}'                   # gcp project id
-  'scrapfly-staff'                        # internal staff cli
+  '[a-z0-9-]+\.home\b'                    # development hostnames
   'scp-(live|test)-[0-9a-f]{32}'          # a real api key, not a placeholder
 )
+labels=("${patterns[@]}")
+
+patterns_file="${INTERNAL_REFS_PATTERNS_FILE:-}"
+if [ -n "$patterns_file" ]; then
+  if [ ! -f "$patterns_file" ] || [ ! -s "$patterns_file" ]; then
+    echo "INTERNAL_REFS_PATTERNS_FILE: $patterns_file is missing or empty" >&2
+    exit 2
+  fi
+  n=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    patterns+=("$line")
+    labels+=("patterns file, line $n")
+  done < "$patterns_file"
+fi
 
 # A search that cannot run (a bad pattern, not a repository) fails the check:
 # git grep and grep exit 1 for "no hit" and above 1 for an error.
@@ -103,11 +110,13 @@ fi
 
 results=$(mktemp)
 trap 'rm -f "$allow_rules" "$added_lines" "$results"' EXIT
-for pattern in "${patterns[@]}"; do
+for i in "${!patterns[@]}"; do
+  pattern="${patterns[$i]}"
+  label="${labels[$i]}"
   search "$pattern" > "$results"
   status=$?
   if [ "$status" -gt 1 ]; then
-    echo "search for [$pattern] failed (exit $status)" >&2
+    echo "search for [$label] failed (exit $status)" >&2
     exit 2
   fi
   while IFS= read -r hit; do
@@ -120,7 +129,7 @@ for pattern in "${patterns[@]}"; do
       scripts/check-internal-refs.sh:*) continue ;;  # so does this script
     esac
     allowed "$location" && continue
-    printf 'internal reference [%s]\n  %s\n' "$pattern" "$hit"
+    printf 'internal reference [%s]\n  %s\n' "$label" "$hit"
     hits=$((hits + 1))
   done < "$results"
 done
