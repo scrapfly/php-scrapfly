@@ -1,11 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.0.2 (2026-11-15)
 
 - The docs name the proxy pools the API takes: `ProxyPool::PublicDatacenterPool` (the default), `PublicResidentialPool`
   and `PublicTorPool`, which are no longer marked deprecated. `ProxyPool::Basic`, `Unblocker`, `UnblockerUltra` and
   `Auto` stay, documented as pools the API does not accept yet (`ERR::PROXY::POOL_NOT_FOUND`).
 - `unblocker` is no longer documented as deprecated. `asp` stays its deprecated alias.
+- The `proxyPool` of `ScreenshotConfig` is documented as a value the Screenshot API ignores.
+- The README and `examples/scrape.php` turn the Unblocker on with `unblocker: true` and name no pool the API does not
+  accept yet.
+- The version constant, sent in the `user-agent`, is the only code change since 0.0.1; the rest are docblocks.
 
 ## 0.0.1 (2026-11-03)
 

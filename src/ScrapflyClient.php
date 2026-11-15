@@ -63,7 +63,7 @@ use Scrapfly\Exception\WebhookException;
  */
 final class ScrapflyClient
 {
-    public const VERSION = '0.0.1';
+    public const VERSION = '0.0.2';
 
     public const DEFAULT_HOST = 'https://api.scrapfly.io';
 
