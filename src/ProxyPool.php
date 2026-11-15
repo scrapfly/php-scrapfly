@@ -5,43 +5,42 @@ declare(strict_types=1);
 namespace Scrapfly;
 
 /**
- * Proxy pools, sent as `proxy_pool`. Each one sets both the proxy network and the
- * Unblocker, so a request with a pool needs neither `unblocker` nor `asp`.
+ * Proxy pools, sent as `proxy_pool`: `PublicDatacenterPool` (the default),
+ * `PublicResidentialPool` or `PublicTorPool`. The anti-bot bypass is the
+ * `unblocker` argument of the config.
+ *
+ * `Basic`, `Unblocker`, `UnblockerUltra` and `Auto` name pools the API does not
+ * accept yet: a request naming one fails with `ERR::PROXY::POOL_NOT_FOUND`.
  *
  * A pool name not listed here, such as a pool of your own, is passed as a string.
  */
 enum ProxyPool: string
 {
-    /** Datacenter proxies, the Unblocker off. */
+    /** Not accepted by the API yet (`ERR::PROXY::POOL_NOT_FOUND`). */
     case Basic = 'basic';
 
-    /** Residential proxies and the Unblocker. */
+    /** Not accepted by the API yet (`ERR::PROXY::POOL_NOT_FOUND`). */
     case Unblocker = 'unblocker';
 
-    /**
-     * Residential proxies and the Unblocker. The only pool accepted by the targets and
-     * anti-bot protections that have a price of their own; it costs the same as
-     * `Unblocker` elsewhere.
-     */
+    /** Not accepted by the API yet (`ERR::PROXY::POOL_NOT_FOUND`). */
     case UnblockerUltra = 'unblocker_ultra';
 
-    /**
-     * The API picks the pool before the request, from the target's profile: the
-     * Unblocker on datacenter proxies, or the pool the target needs. Priced as the
-     * pool it runs on.
-     */
+    /** Not accepted by the API yet (`ERR::PROXY::POOL_NOT_FOUND`). */
     case Auto = 'auto';
 
     /** The Tor network, the only pool that reaches .onion hidden services. */
     case PublicTorPool = 'public_tor_pool';
 
-    /** @deprecated Written before the proxy pools: see https://scrapfly.io/new-pricing#legacy-spellings */
+    /** Datacenter proxies, the default pool. */
     case PublicDatacenterPool = 'public_datacenter_pool';
 
-    /** @deprecated Written before the proxy pools: see https://scrapfly.io/new-pricing#legacy-spellings */
+    /** Residential proxies. */
     case PublicResidentialPool = 'public_residential_pool';
 
-    /** Whether this name predates the proxy pools. The API still accepts it. */
+    /**
+     * Whether this is `PublicDatacenterPool` or `PublicResidentialPool`: pool names older than the four the API does
+     * not accept yet, and the ones it accepts today. `PublicTorPool` is not one.
+     */
     public function isLegacy(): bool
     {
         return match ($this) {

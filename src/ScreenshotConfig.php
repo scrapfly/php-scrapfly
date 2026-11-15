@@ -29,7 +29,7 @@ final class ScreenshotConfig
      * @param string|null $resolution `WIDTHxHEIGHT`, `1920x1080` by default
      * @param int|null $timeout milliseconds
      * @param list<ScreenshotOption|string> $options
-     * @param ProxyPool|string|null $proxyPool the proxy pool; a string for a pool of your own
+     * @param ProxyPool|string|null $proxyPool sent as `proxy_pool`; the Screenshot API picks its pool itself and ignores the value
      */
     public function __construct(
         public string $url,

@@ -30,7 +30,7 @@ final class CrawlerConfig
     /** Longest refresh period, in seconds. */
     public const REFRESH_MAX_INTERVAL = 7776000;
 
-    /** The Unblocker toggle, sent as `asp`. Set through `proxyPool`, or the deprecated `unblocker` and `asp`. */
+    /** The Unblocker toggle, sent as `asp`. Set through `unblocker`, or its deprecated alias `asp`. */
     public bool $asp;
 
     /**
@@ -45,10 +45,10 @@ final class CrawlerConfig
      * @param bool|null $search build a semantic search index of the crawl, queried by search, prompt and extract
      * @param bool|null $refresh re-scrape the crawl's own URLs in place on a period, same uuid
      * @param int|null $refreshInterval seconds between refresh runs, REFRESH_MIN_INTERVAL to REFRESH_MAX_INTERVAL
-     * @param ProxyPool|string|null $proxyPool the proxy pool of every page; a string for a pool of your own
+     * @param ProxyPool|string|null $proxyPool the proxy pool of every page: `ProxyPool::PublicDatacenterPool` (the default), `PublicResidentialPool` or `PublicTorPool`; a string for a pool of your own
      * @param list<string>|null $webhookEvents
-     * @param bool|null $unblocker deprecated: use `proxyPool` (`ProxyPool::UnblockerUltra` for the Unblocker)
-     * @param bool|null $asp deprecated: use `proxyPool` (`ProxyPool::UnblockerUltra` for the Unblocker)
+     * @param bool|null $unblocker turn the Unblocker (anti-bot bypass) on for every page
+     * @param bool|null $asp deprecated alias of `unblocker`; when both are given, `asp` wins
      */
     public function __construct(
         public ?string $url = null,

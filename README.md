@@ -33,11 +33,10 @@ in camel case.
 
 ```php
 use Scrapfly\Format;
-use Scrapfly\ProxyPool;
 
 $response = $client->scrape(new ScrapeConfig(
     url: 'https://web-scraping.dev/products',
-    proxyPool: ProxyPool::Unblocker,
+    unblocker: true,
     renderJs: true,
     waitForSelector: '.product',
     format: Format::Markdown,
@@ -45,40 +44,42 @@ $response = $client->scrape(new ScrapeConfig(
 ));
 ```
 
+## Unblocker
+
+`unblocker: true` turns on the Unblocker, Scrapfly's anti-bot bypass, on
+`ScrapeConfig` and `CrawlerConfig`:
+
+```php
+$response = $client->scrape(new ScrapeConfig(url: 'https://web-scraping.dev/products', unblocker: true));
+```
+
+`asp` is its deprecated alias and keeps working. When both are given, `asp`
+wins, so an explicit `asp: false` turns the feature off.
+`isUnblockerEnabled()` reads the result, which the request carries as `asp`.
+
 ## Proxy pools
 
-`proxyPool` picks the proxy pool of the Web Scraping API, the Crawler and the
-Screenshot API. Each pool sets both the proxy network and the anti-bot bypass
-(the Unblocker):
+`proxyPool` picks the proxy pool of the Web Scraping API and the Crawler:
 
 | Case | Wire value | What it runs |
 |---|---|---|
-| `ProxyPool::Basic` | `basic` | datacenter proxies, Unblocker off |
-| `ProxyPool::Unblocker` | `unblocker` | residential proxies, Unblocker on |
-| `ProxyPool::UnblockerUltra` | `unblocker_ultra` | residential proxies, Unblocker on, the only pool accepted by targets and anti-bot protections that have a price of their own |
-| `ProxyPool::Auto` | `auto` | the API picks the pool before the request, from the target's profile, priced as the pool it runs on |
+| `ProxyPool::PublicDatacenterPool` | `public_datacenter_pool` | datacenter proxies, the default |
+| `ProxyPool::PublicResidentialPool` | `public_residential_pool` | residential proxies |
+| `ProxyPool::PublicTorPool` | `public_tor_pool` | the Tor network, the only pool that reaches `.onion` sites |
 
-A request on `basic` or `unblocker` against a target or anti-bot protection
-that has a price of its own fails with `ERR::PROXY::UNBLOCKER_ULTRA_REQUIRED`
-(HTTP 422, not billed); retry it with `ProxyPool::UnblockerUltra`. Without
-`proxyPool` the SDK sends none. `ProxyPool::PublicTorPool` routes through the
-Tor network, the only pool that reaches `.onion` sites. A pool of your own is
-passed by name, as a string.
+```php
+use Scrapfly\ProxyPool;
 
-The Screenshot API takes the four pools of the table only.
+$config = new ScrapeConfig(url: 'https://web-scraping.dev/products', proxyPool: ProxyPool::PublicResidentialPool);
+```
 
-### Deprecated: `unblocker` and `asp`
-
-The `unblocker` argument of `ScrapeConfig` and `CrawlerConfig`, and its older
-name `asp`, are deprecated: use `proxyPool` (`ProxyPool::UnblockerUltra` for the
-Unblocker). The [migration guide](https://scrapfly.io/new-pricing#legacy-spellings)
-covers the requests written before the proxy pools, the pool names
-`ProxyPool::PublicDatacenterPool` and `ProxyPool::PublicResidentialPool`
-included.
-
-Both names still work. When both are given, `asp` wins, so an explicit
-`asp: false` turns the feature off. `isUnblockerEnabled()` reads the result,
-which the request carries as `asp`.
+Without `proxyPool` the SDK sends none. A pool of your own is passed by name,
+as a string. `ProxyPool::Basic`, `ProxyPool::Unblocker`,
+`ProxyPool::UnblockerUltra` and `ProxyPool::Auto` name pools the API does not
+accept yet: a request naming one fails with `ERR::PROXY::POOL_NOT_FOUND`. The
+Screenshot API picks its pool itself and ignores the `proxyPool` of
+`ScreenshotConfig`. The Cloud Browser keeps its own pools, `datacenter`,
+`residential` and `tor`, and a session on `byopProxy` runs as `byop`.
 
 ## Errors
 
@@ -231,6 +232,8 @@ scrape finishes. Every config needs a correlation id of its own, which keys
 its result:
 
 ```php
+use Scrapfly\Exception\ScrapflyException;
+
 foreach ($client->scrapeBatch([
     new ScrapeConfig(url: 'https://web-scraping.dev/product/1', correlationId: 'p1'),
     new ScrapeConfig(url: 'https://web-scraping.dev/product/2', correlationId: 'p2'),

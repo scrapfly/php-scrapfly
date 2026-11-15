@@ -12,7 +12,7 @@ use Scrapfly\Exception\ScrapeConfigException;
  * ```php
  * $config = new ScrapeConfig(
  *     url: 'https://web-scraping.dev/products',
- *     proxyPool: ProxyPool::Unblocker,
+ *     unblocker: true,
  *     renderJs: true,
  *     format: Format::Markdown,
  * );
@@ -29,7 +29,7 @@ final class ScrapeConfig
     /** @var array<string, string> */
     public array $cookies;
 
-    /** The Unblocker toggle, sent as `asp`. Set through `proxyPool`, or the deprecated `unblocker` and `asp`. */
+    /** The Unblocker toggle, sent as `asp`. Set through `unblocker`, or its deprecated alias `asp`. */
     public bool $asp;
 
     public ProxyPool|string|null $proxyPool;
@@ -43,7 +43,7 @@ final class ScrapeConfig
      * @param array<string, mixed>|null $data form or JSON fields, encoded into `body` from the `content-type` header
      * @param array<string, string> $headers
      * @param array<string, string> $cookies
-     * @param ProxyPool|string|null $proxyPool the proxy pool, which sets the Unblocker too; a string for a pool of your own
+     * @param ProxyPool|string|null $proxyPool `ProxyPool::PublicDatacenterPool` (the default), `PublicResidentialPool` or `PublicTorPool`; a string for a pool of your own
      * @param list<string> $tags
      * @param list<FormatOption|string> $formatOptions
      * @param array<string, mixed>|null $extractionEphemeralTemplate
@@ -53,8 +53,8 @@ final class ScrapeConfig
      * @param list<string> $lang
      * @param int|null $timeout milliseconds
      * @param bool $proxifiedResponse answer with the target's own response; a batch part, or scrapeProxified() for one scrape
-     * @param bool|null $unblocker deprecated: use `proxyPool` (`ProxyPool::UnblockerUltra` for the Unblocker)
-     * @param bool|null $asp deprecated: use `proxyPool` (`ProxyPool::UnblockerUltra` for the Unblocker)
+     * @param bool|null $unblocker turn the Unblocker (anti-bot bypass) on
+     * @param bool|null $asp deprecated alias of `unblocker`; when both are given, `asp` wins
      */
     public function __construct(
         public string $url,
@@ -139,7 +139,7 @@ final class ScrapeConfig
         }
     }
 
-    /** Whether the Unblocker is asked for through `unblocker` or `asp`. A proxy pool sets it on its own. */
+    /** Whether the Unblocker is asked for, through `unblocker` or `asp`. */
     public function isUnblockerEnabled(): bool
     {
         return $this->asp;
@@ -229,7 +229,7 @@ final class ScrapeConfig
         if ($this->proxifiedResponse) {
             $params['proxified_response'] = 'true';
         }
-        // The wire key stays `asp` for both deprecated names.
+        // The wire key stays `asp` for both names.
         if ($this->asp) {
             $params['asp'] = 'true';
         }
